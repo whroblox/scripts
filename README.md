@@ -57,7 +57,7 @@ scripts/
 2. Запусти loader:
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/official-ids/scripts/main/loader.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/whroblox/scripts/main/loader.lua"))()
 ```
 
 3. Готово. Клавиша `RightControl` (или круглая кнопка «W») — показать/скрыть окно.
@@ -68,14 +68,14 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/official-ids/scripts/
 
 ```json
 {
-  "id": "local-npc",
-  "name": "NPC Local for test damage",
+  "id": "damage-dummy",
+  "name": "Damage Dummy",
   "version": "1.0.0",
   "author": "WhiteCheats",
-  "description": "Скрипт создает визуальную модель NPC которую видит только executor (клиент).",
+  "description": "Локальный манекен для теста урона — виден только тебе. Кастомизация: скорость, одежда, аксессуары. Лог урона и DPS.",
   "entry": "main.lua",
-  "icon": "icon.svg",
-  "tags": ["visual", "client-only"]
+  "icon": "icon.png",
+  "tags": ["npc", "visual", "client-only", "damage-test"]
 }
 ```
 
@@ -94,11 +94,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/official-ids/scripts/
 
 ```
 ┌──────────────────────────────────────────────┐
-│ ┌────┐  NPC Local for test damage    v1.0.0  │
-│ │ ✦  │  Это скрипт для проверки урона        │
-│ │    │  Скрипт создает визуальную модель NPC │
-│ └────┘  которую видит только executor...     │
-│                                    [ INJECT ] │
+│ ┌────┐  Damage Dummy                 v1.0.0  │
+│ │ ✦  │  Локальный манекен для теста урона    │
+│ │    │  — виден только тебе. Кастомизация:   │
+│ └────┘  скорость, одежда...     [ INJECT ]   │
 └──────────────────────────────────────────────┘
 ```
 

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#131318"/>
+  <rect x="5" y="5" width="246" height="246" rx="52" fill="none" stroke="#2a2a36" stroke-width="3"/>
+  <!-- мишень -->
+  <circle cx="128" cy="124" r="62" fill="none" stroke="url(#ring)" stroke-width="10"/>
+  <circle cx="128" cy="124" r="36" fill="none" stroke="#e8e8f0" stroke-width="4" opacity="0.85"/>
+  <!-- крест прицела -->
+  <line x1="128" y1="40" x2="128" y2="78" stroke="#e8e8f0" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="170" x2="128" y2="208" stroke="#e8e8f0" stroke-width="7" stroke-linecap="round"/>
+  <line x1="44" y1="124" x2="82" y2="124" stroke="#e8e8f0" stroke-width="7" stroke-linecap="round"/>
+  <line x1="174" y1="124" x2="212" y2="124" stroke="#e8e8f0" stroke-width="7" stroke-linecap="round"/>
+  <!-- попадание -->
+  <circle cx="128" cy="124" r="12" fill="#8b5cf6"/>
+  <circle cx="128" cy="124" r="5" fill="#22d3ee"/>
+</svg>

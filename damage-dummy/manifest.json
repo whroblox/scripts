@@ -1,0 +1,10 @@
+{
+  "id": "damage-dummy",
+  "name": "Damage Dummy",
+  "version": "1.0.0",
+  "author": "WhiteCheats",
+  "description": "Локальный манекен для теста урона — виден только тебе. Кастомизация: скорость, одежда, аксессуары. Лог урона и DPS.",
+  "entry": "main.lua",
+  "icon": "icon.png",
+  "tags": ["npc", "visual", "client-only", "damage-test"]
+}

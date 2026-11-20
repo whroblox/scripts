@@ -15,7 +15,7 @@
       - эмодзи в коде запрещены, разрешены символы и SVG-иконки.
 
     Запуск:
-      loadstring(game:HttpGet("https://raw.githubusercontent.com/official-ids/scripts/main/loader.lua"))()
+      loadstring(game:HttpGet("https://raw.githubusercontent.com/whroblox/scripts/main/loader.lua"))()
 
     Управление:
       RightControl        — показать / скрыть окно
@@ -28,7 +28,7 @@
 ---------------------------------------------------------------------
 
 local CONFIG = {
-    REPO_OWNER     = "official-ids",   -- после смены ника на WhiteCheats заменить на "WhiteCheats"
+    REPO_OWNER     = "whroblox",   -- владелец репозитория
     REPO_NAME      = "scripts",
     BRANCH         = "main",
     API_BASE       = "https://api.github.com",
