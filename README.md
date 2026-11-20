@@ -6,7 +6,7 @@
 
 **Белые скрипты для Roblox — польза без вреда**
 
-`client-side only` • `glass UI` • `dark / white / system / auto`
+`client-side only`
 
 [![loader](https://img.shields.io/badge/loader-v1.0.0-8b5cf6?style=for-the-badge&logo=github)](loader.lua)
 [![platform](https://img.shields.io/badge/platform-roblox-06b6d4?style=flat-square)](https://www.roblox.com)
@@ -45,8 +45,6 @@ scripts/
 │   ├── main.lua
 │   ├── icon.svg
 │   └── README.md
-├── docs/
-│   └── STYLE.md        ← 📘 правила оформления WhiteCheats
 └── {имя-скрипта}/      ← 📁 одна папка = один скрипт
     ├── manifest.json   ← карточка скрипта
     ├── main.lua        ← точка входа
@@ -122,21 +120,12 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/official-ids/scripts/
 3. Код пиши в `main.lua` (или свой файл + поле `entry`).
 4. Закоммить и запуш — loader подхватит папку автоматически.
 
-## 📐 Правила оформления WhiteCheats
+## 📐 Правила оформления
 
 | где | можно | нельзя |
 | --- | --- | --- |
-| аккаунт GitHub | эмодзи, символы | — |
 | репозитории | эмодзи и символы **только** в `.md` / `.txt` | эмодзи в коде |
 | скрипты (`.lua`) | символы, SVG-иконки | **эмодзи — строго запрещены** |
-
-Подробнее: [docs/STYLE.md](docs/STYLE.md).
-
-## 🗺 Roadmap
-
-- [x] Фаза 1 — аккаунт, репозиторий, loader
-- [ ] Фаза 2 — первый скрипт: **Local NPC** (полная кастомизация: скорость, одежда, волосы, аксессуары и куча всего)
-- [ ] Фаза 3 — сайт на Vercel (glass, темы dark / white / system / auto)
 
 ## 📄 Лицензия
 
