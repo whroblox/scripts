@@ -1,10 +1,19 @@
 --[[=====================================================================
     W H I T E C H E A T S   •   D A M A G E   D U M M Y
-    version: 1.0.0
+    version: 1.1.0
 
     Локальный (client-side) NPC-манекен для теста урона.
     Модель существует только на твоём клиенте: сервер её не видит,
     другие игроки видят, будто ты стреляешь в пустоту.
+
+    КАК РАБОТАЕТ УРОН (два канала):
+      1) пассивный — если игра сама наносит урон клиенту манекена
+         (HealthChanged), попадание логируется как есть;
+      2) hit-детектор — каждый твой клик превращается в raycast от
+         камеры: попал в манекен -> урон. Значение берётся из твоего
+         Tool (атрибут или Value с именем Damage / DMG). Если оружие
+         не сообщает урон — применяется тестовое (слайдер TEST DAMAGE)
+         и попадание помечается "est".
 
     Возможности:
       - R6-манекен (сборка с нуля) или клон твоего персонажа (R15/R6);
@@ -12,9 +21,10 @@
         волосы и аксессуары по ID;
       - движение: стоит / бродит / следует за тобой, WalkSpeed,
         JumpPower, радиус брожения;
-      - тест урона: лог попаданий, суммарный урон, DPS за окно 5 сек,
-        всплывающие числа урона, полоска HP над головой;
-      - god mode, авто-респаун с задержкой, лечение, сброс статистики.
+      - тест урона: лог попаданий (часть тела, дистанция), суммарный
+        урон, DPS за окно 5 сек, всплывающие числа, полоска HP;
+      - headshot x2 (эмуляция), god mode, авто-респаун, лечение,
+        сброс статистики.
 
     Запуск из loader (кнопка INJECT) или отдельно:
       loadstring(game:HttpGet("https://raw.githubusercontent.com/whroblox/scripts/main/damage-dummy/main.lua"))()
@@ -29,11 +39,12 @@
 ---------------------------------------------------------------------
 
 local CONFIG = {
-    VERSION    = "1.0.0",
+    VERSION    = "1.1.0",
     TOGGLE_KEY = Enum.KeyCode.RightShift,
     STATE_PATH = "whitecheats_damage_dummy.json",
-    UI_WIDTH   = 520,
-    UI_HEIGHT  = 500,
+    UI_WIDTH   = 540,
+    UI_HEIGHT  = 524,
+    ICON_URL   = "https://raw.githubusercontent.com/whroblox/scripts/main/damage-dummy/icon.png",
 }
 
 ---------------------------------------------------------------------
@@ -70,9 +81,16 @@ local settings = {
     wanderRadius   = 20,
     floatDamage    = true,
     healthBar      = true,
+    hitDetector    = true,      -- активный канал урона (клик -> raycast)
+    headshotMult   = false,     -- x2 при попадании в голову (эмуляция)
+    testDamage     = 25,        -- урон за выстрел, если оружие не сообщает
 }
 
 local themeMode = "dark"
+
+-- forward declarations (заполняются ниже)
+local dummy        -- состояние манекена
+local spawnDummy   -- спавн / респаун
 
 local function loadAll()
     if type(readfile) ~= "function" then return end
@@ -100,10 +118,6 @@ end
 
 loadAll()
 
--- forward declarations (заполняются ниже)
-local dummy        -- состояние манекена
-local spawnDummy   -- спавн / респаун
-
 ---------------------------------------------------------------------
 -- THEME (dark / white — палитра как у loader)
 ---------------------------------------------------------------------
@@ -122,6 +136,7 @@ local THEMES = {
         danger  = Color3.fromRGB(236, 84, 84),
         btnText = Color3.fromRGB(255, 255, 255),
         glassT  = 0.06,
+        shadow  = 0.45,
     },
     white = {
         bg      = Color3.fromRGB(240, 241, 246),
@@ -136,6 +151,7 @@ local THEMES = {
         danger  = Color3.fromRGB(222, 62, 62),
         btnText = Color3.fromRGB(255, 255, 255),
         glassT  = 0.10,
+        shadow  = 0.72,
     },
 }
 
@@ -174,6 +190,15 @@ local function stroke(parent, thickness)
     return mk("UIStroke", { Thickness = thickness or 1 }, parent)
 end
 
+local function gradient(parent)
+    return mk("UIGradient", {
+        Rotation = 45,
+        Color = ColorSequence.new(
+            ColorSequenceKeypoint.new(0, currentPal.accent),
+            ColorSequenceKeypoint.new(1, currentPal.accent2)),
+    }, parent)
+end
+
 local function numericId(v)
     local n = tostring(v or ""):match("(%d+)")
     if n then return tonumber(n) end
@@ -189,6 +214,56 @@ local function parseHex(s)
     local b = tonumber(s:sub(5, 6), 16)
     if not (r and g and b) then return nil end
     return Color3.fromRGB(r, g, b)
+end
+
+local function myChar()
+    local c = LocalPlayer.Character
+    if c and c.Parent then return c end
+    return nil
+end
+
+---------------------------------------------------------------------
+-- HTTP (для иконки в шапке; необязательно)
+---------------------------------------------------------------------
+
+local httpRequest
+do
+    local candidates = {
+        http_request, request, syn_request, fluxus_request,
+        (type(http) == "table" and type(http.request) == "function") and http.request or nil,
+    }
+    for _, fn in ipairs(candidates) do
+        if type(fn) == "function" then
+            httpRequest = fn
+            break
+        end
+    end
+end
+
+local function httpGet(url)
+    if type(httpRequest) ~= "function" then return nil end
+    local ok, res = pcall(httpRequest, { Url = url, Method = "GET" })
+    if not ok or type(res) ~= "table" then return nil end
+    local status = res.StatusCode or res.code or res.status_code
+    local body = res.Body or res.body
+    if status ~= nil and status ~= 200 then return nil end
+    if type(body) ~= "string" then return nil end
+    return body
+end
+
+local function loadIconAsset()
+    if type(getcustomasset) ~= "function" or type(writefile) ~= "function" then return nil end
+    local ok, assetId = pcall(function()
+        local path = "wc_dd_icon_" .. tostring(math.random(100000000, 999999999)) .. ".png"
+        local data = httpGet(CONFIG.ICON_URL)
+        if not data then return nil end
+        writefile(path, data)
+        local id = getcustomasset(path)
+        pcall(function() delfile(path) end)
+        return id
+    end)
+    if ok and assetId then return assetId end
+    return nil
 end
 
 ---------------------------------------------------------------------
@@ -216,21 +291,23 @@ local gui = mountGui()
 -- MAIN WINDOW
 ---------------------------------------------------------------------
 
+local isTouch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
 local main = mk("Frame", {
     Name = "Main",
-    AnchorPoint = Vector2.new(0, 0.5),
-    Position = UDim2.new(1, -(CONFIG.UI_WIDTH + 24), 0.5, 0),
+    AnchorPoint = isTouch and Vector2.new(0.5, 0.5) or Vector2.new(0, 0.5),
+    Position = isTouch and UDim2.new(0.5, 0, 0.5, 0) or UDim2.new(1, -(CONFIG.UI_WIDTH + 24), 0.5, 0),
     Size = UDim2.fromOffset(CONFIG.UI_WIDTH, CONFIG.UI_HEIGHT),
     BackgroundColor3 = currentPal.bg,
     BackgroundTransparency = currentPal.glassT,
     BorderSizePixel = 0,
     Active = false,
 }, gui)
-corner(main, 14)
+corner(main, 16)
 local mainStroke = stroke(main, 1)
 
-if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
-    mk("UIScale", { Scale = 0.66 }, main)
+if isTouch then
+    mk("UIScale", { Scale = 0.74 }, main)
 end
 
 ---------------------------------------------------------------------
@@ -238,52 +315,82 @@ end
 ---------------------------------------------------------------------
 
 local header = mk("Frame", {
-    Size = UDim2.new(1, 0, 0, 46),
+    Size = UDim2.new(1, 0, 0, 58),
     BackgroundTransparency = 1,
     Active = true,
 }, main)
 
+local iconBox = mk("Frame", {
+    Position = UDim2.new(0, 14, 0, 12),
+    Size = UDim2.fromOffset(34, 34),
+    BorderSizePixel = 0,
+}, header)
+corner(iconBox, 10)
+local iconGradient = gradient(iconBox)
+local iconLabel = mk("TextLabel", {
+    BackgroundTransparency = 1,
+    Size = UDim2.new(1, 0, 1, 0),
+    Font = Enum.Font.GothamBlack,
+    TextSize = 18,
+    TextColor3 = Color3.fromRGB(255, 255, 255),
+    Text = "◎",
+}, iconBox)
+
 local title = mk("TextLabel", {
     BackgroundTransparency = 1,
-    Position = UDim2.new(0, 14, 0, 0),
-    Size = UDim2.new(1, -200, 1, 0),
+    Position = UDim2.new(0, 58, 0, 10),
+    Size = UDim2.new(1, -200, 0, 20),
     Font = Enum.Font.GothamBlack,
-    TextSize = 15,
+    TextSize = 16,
     TextXAlignment = Enum.TextXAlignment.Left,
     Text = "DAMAGE DUMMY",
 }, header)
 
-local versionChip = mk("TextLabel", {
-    AnchorPoint = Vector2.new(1, 0),
-    Position = UDim2.new(1, -14, 0, 8),
-    Size = UDim2.fromOffset(50, 22),
+local subtitle = mk("TextLabel", {
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 58, 0, 31),
+    Size = UDim2.new(1, -200, 0, 14),
     Font = Enum.Font.Gotham,
     TextSize = 10,
-    Text = "v" .. CONFIG.VERSION,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Text = "local damage test  •  client-only",
 }, header)
-corner(versionChip, 6)
+
+local themeBtn = mk("TextButton", {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -48, 0, 16),
+    Size = UDim2.fromOffset(66, 26),
+    Font = Enum.Font.GothamBold,
+    TextSize = 10,
+    AutoButtonColor = true,
+    Text = string.upper(themeMode),
+}, header)
+corner(themeBtn, 8)
 
 local closeBtn = mk("TextButton", {
     AnchorPoint = Vector2.new(1, 0),
-    Position = UDim2.new(1, -72, 0, 8),
-    Size = UDim2.fromOffset(24, 22),
+    Position = UDim2.new(1, -14, 0, 16),
+    Size = UDim2.fromOffset(26, 26),
     Font = Enum.Font.GothamBold,
     TextSize = 13,
     AutoButtonColor = false,
     Text = "✕",
 }, header)
-corner(closeBtn, 6)
+corner(closeBtn, 8)
 
-local themeBtn = mk("TextButton", {
-    AnchorPoint = Vector2.new(1, 0),
-    Position = UDim2.new(1, -104, 0, 8),
-    Size = UDim2.fromOffset(58, 22),
-    Font = Enum.Font.GothamBold,
-    TextSize = 10,
-    AutoButtonColor = false,
-    Text = "THEME",
-}, header)
-corner(themeBtn, 6)
+-- градиентная полоса под шапкой
+local gradLine = mk("Frame", {
+    Position = UDim2.new(0, 14, 0, 56),
+    Size = UDim2.new(1, -28, 0, 2),
+    BorderSizePixel = 0,
+}, main)
+mk("UIGradient", {
+    Rotation = 0,
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.2),
+        NumberSequenceKeypoint.new(1, 0.75),
+    }),
+}, gradLine)
 
 ---------------------------------------------------------------------
 -- FOOTER
@@ -292,19 +399,29 @@ corner(themeBtn, 6)
 local footer = mk("Frame", {
     AnchorPoint = Vector2.new(0, 1),
     Position = UDim2.new(0, 0, 1, 0),
-    Size = UDim2.new(1, 0, 0, 24),
+    Size = UDim2.new(1, 0, 0, 28),
     BackgroundTransparency = 1,
 }, main)
 
 local statusLabel = mk("TextLabel", {
     BackgroundTransparency = 1,
     Position = UDim2.new(0, 14, 0, 0),
-    Size = UDim2.new(1, -28, 1, 0),
+    Size = UDim2.new(1, -110, 1, 0),
     Font = Enum.Font.Gotham,
     TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Left,
     TextTruncate = Enum.TextTruncate.AtEnd,
     Text = "idle",
+}, footer)
+
+local versionLabel = mk("TextLabel", {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -14, 0, 0),
+    Size = UDim2.fromOffset(90, 28),
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    Text = "v" .. CONFIG.VERSION,
 }, footer)
 
 ---------------------------------------------------------------------
@@ -315,14 +432,17 @@ local TAB_NAMES = { "SPAWN", "LOOK", "MOVE", "TEST" }
 local currentTab = "SPAWN"
 
 local tabBar = mk("Frame", {
-    Position = UDim2.new(0, 10, 0, 46),
-    Size = UDim2.new(1, -20, 0, 32),
-    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 12, 0, 66),
+    Size = UDim2.new(1, -24, 0, 34),
+    BackgroundColor3 = currentPal.panel,
+    BackgroundTransparency = 0.3,
+    BorderSizePixel = 0,
 }, main)
+corner(tabBar, 10)
 
 local body = mk("Frame", {
-    Position = UDim2.new(0, 10, 0, 84),
-    Size = UDim2.new(1, -20, 1, -114),
+    Position = UDim2.new(0, 12, 0, 108),
+    Size = UDim2.new(1, -24, 1, -140),
     BackgroundTransparency = 1,
 }, main)
 
@@ -335,12 +455,12 @@ local function paintTabBar()
         if btn then
             if name == currentTab then
                 btn.BackgroundColor3 = currentPal.accent
-                btn.TextColor3 = currentPal.btnText
                 btn.BackgroundTransparency = 0
+                btn.TextColor3 = currentPal.btnText
             else
                 btn.BackgroundColor3 = currentPal.panel
+                btn.BackgroundTransparency = 1
                 btn.TextColor3 = currentPal.subtext
-                btn.BackgroundTransparency = 0.1
             end
         end
     end
@@ -348,11 +468,12 @@ end
 
 for i, name in ipairs(TAB_NAMES) do
     local btn = mk("TextButton", {
-        Position = UDim2.new((i - 1) / #TAB_NAMES, 3, 0, 0),
-        Size = UDim2.new(1 / #TAB_NAMES, -6, 1, 0),
+        Position = UDim2.new((i - 1) / #TAB_NAMES, 4, 0, 4),
+        Size = UDim2.new(1 / #TAB_NAMES, -8, 1, -8),
         Font = Enum.Font.GothamBold,
         TextSize = 11,
         AutoButtonColor = false,
+        BackgroundTransparency = 1,
         Text = name,
     }, tabBar)
     corner(btn, 8)
@@ -378,14 +499,14 @@ local function makeTab(name)
         Visible = (name == currentTab),
     }, body)
     mk("UIListLayout", {
-        Padding = UDim.new(0, 8),
+        Padding = UDim.new(0, 9),
         SortOrder = Enum.SortOrder.LayoutOrder,
     }, sf)
     mk("UIPadding", {
-        PaddingTop = UDim.new(0, 4),
-        PaddingBottom = UDim.new(0, 10),
+        PaddingTop = UDim.new(0, 6),
+        PaddingBottom = UDim.new(0, 12),
         PaddingLeft = UDim.new(0, 2),
-        PaddingRight = UDim.new(0, 6),
+        PaddingRight = UDim.new(0, 8),
     }, sf)
     tabFrames[name] = sf
     return sf
@@ -393,6 +514,12 @@ end
 
 for _, name in ipairs(TAB_NAMES) do
     makeTab(name)
+end
+
+local orderCounter = 0
+local function nextOrder()
+    orderCounter = orderCounter + 1
+    return orderCounter
 end
 
 ---------------------------------------------------------------------
@@ -403,14 +530,16 @@ local function paintButton(btn, kind)
     if kind == "accent" then
         btn.BackgroundColor3 = currentPal.accent
         btn.TextColor3 = currentPal.btnText
+        btn.BackgroundTransparency = 0
     elseif kind == "danger" then
         btn.BackgroundColor3 = currentPal.danger
         btn.TextColor3 = currentPal.btnText
+        btn.BackgroundTransparency = 0
     else
         btn.BackgroundColor3 = currentPal.panel
         btn.TextColor3 = currentPal.text
+        btn.BackgroundTransparency = 0.1
     end
-    btn.BackgroundTransparency = (kind == "plain") and 0.1 or 0
 end
 
 local function makeButton(parent, text, kind, onClick, order)
@@ -418,11 +547,14 @@ local function makeButton(parent, text, kind, onClick, order)
         Size = UDim2.new(1, 0, 1, 0),
         Font = Enum.Font.GothamBold,
         TextSize = 12,
-        AutoButtonColor = false,
+        AutoButtonColor = true,
         Text = text,
         LayoutOrder = order or 0,
     }, parent)
-    corner(btn, 8)
+    corner(btn, 10)
+    if kind == "accent" then
+        gradient(btn)
+    end
     bind(function() paintButton(btn, kind) end)
     btn.MouseButton1Click:Connect(onClick)
     return btn
@@ -430,9 +562,9 @@ end
 
 local function makeRow(parent, count, order)
     local row = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 30),
+        Size = UDim2.new(1, 0, 0, 34),
         BackgroundTransparency = 1,
-        LayoutOrder = order or 0,
+        LayoutOrder = order or nextOrder(),
     }, parent)
     mk("UIListLayout", {
         FillDirection = Enum.FillDirection.Horizontal,
@@ -453,97 +585,149 @@ local function makeRow(parent, count, order)
     return row, add
 end
 
-local function makeToggle(parent, label, value, onChange, order)
+local function sectionLabel(parent, text)
+    return mk("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 16),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        TextSize = 9,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = string.upper(text),
+        LayoutOrder = nextOrder(),
+    }, parent)
+end
+
+-- switch (ползунок) вместо галочек
+local function makeSwitch(parent, label, value, onChange, order)
     local state = value == true
     local btn = mk("TextButton", {
-        Size = UDim2.new(1, 0, 0, 30),
+        Size = UDim2.new(1, 0, 0, 36),
         Font = Enum.Font.Gotham,
         TextSize = 12,
         AutoButtonColor = false,
         Text = "",
-        LayoutOrder = order or 0,
+        LayoutOrder = order or nextOrder(),
     }, parent)
-    corner(btn, 8)
-    local dot = mk("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 10, 0, 0),
-        Size = UDim2.fromOffset(22, 30),
-        Font = Enum.Font.GothamBold,
-        TextSize = 14,
-        Text = state and "●" or "○",
-    }, btn)
+    corner(btn, 10)
     local lbl = mk("TextLabel", {
         BackgroundTransparency = 1,
-        Position = UDim2.new(0, 36, 0, 0),
-        Size = UDim2.new(1, -46, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(1, -70, 1, 0),
         Font = Enum.Font.Gotham,
         TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
         Text = label,
     }, btn)
+    local track = mk("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.fromOffset(42, 22),
+        BorderSizePixel = 0,
+    }, btn)
+    corner(track, 11)
+    local knob = mk("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0, 0, 0.5, 0),
+        Size = UDim2.fromOffset(16, 16),
+        BorderSizePixel = 0,
+    }, track)
+    corner(knob, 8)
+
+    local function paint()
+        if state then
+            track.BackgroundColor3 = currentPal.accent
+            track.BackgroundTransparency = 0
+            knob.Position = UDim2.new(1, -11, 0.5, 0)
+            knob.BackgroundColor3 = currentPal.btnText
+        else
+            track.BackgroundColor3 = currentPal.panel
+            track.BackgroundTransparency = 0.15
+            knob.Position = UDim2.new(0, 11, 0.5, 0)
+            knob.BackgroundColor3 = currentPal.subtext
+        end
+    end
+
+    local function toggle()
+        state = not state
+        paint()
+        onChange(state)
+        saveAll()
+    end
+
     bind(function(pal)
         btn.BackgroundColor3 = pal.panel
         btn.BackgroundTransparency = 0.1
         lbl.TextColor3 = pal.text
-        dot.TextColor3 = state and pal.accent or pal.subtext
-        dot.Text = state and "●" or "○"
+        paint()
     end)
-    btn.MouseButton1Click:Connect(function()
-        state = not state
-        onChange(state)
-        saveAll()
-    end)
+
+    btn.MouseButton1Click:Connect(toggle)
+    paint()
     return btn
 end
 
+-- слайдер: крупная зона касания, значение в чипе
 local function makeSlider(parent, label, min, max, step, value, onChange, order)
     local row = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 44),
+        Size = UDim2.new(1, 0, 0, 50),
         BackgroundTransparency = 1,
-        LayoutOrder = order or 0,
+        LayoutOrder = order or nextOrder(),
     }, parent)
     local nameLabel = mk("TextLabel", {
         BackgroundTransparency = 1,
         Position = UDim2.new(0, 2, 0, 0),
-        Size = UDim2.new(1, -60, 0, 18),
+        Size = UDim2.new(1, -110, 0, 18),
         Font = Enum.Font.Gotham,
         TextSize = 11,
         TextXAlignment = Enum.TextXAlignment.Left,
         Text = label,
     }, row)
-    local valueLabel = mk("TextLabel", {
+    local valueChip = mk("Frame", {
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, -2, 0, 0),
-        Size = UDim2.fromOffset(56, 18),
-        Font = Enum.Font.GothamBold,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        Text = tostring(value),
-    }, row)
-    local track = mk("Frame", {
-        Position = UDim2.new(0, 2, 0, 28),
-        Size = UDim2.new(1, -4, 0, 6),
-        BackgroundColor3 = currentPal.panel,
+        Size = UDim2.fromOffset(58, 22),
         BorderSizePixel = 0,
     }, row)
-    corner(track, 3)
+    corner(valueChip, 6)
+    local valueLabel = mk("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        Text = tostring(value),
+    }, valueChip)
+    local hitArea = mk("TextButton", {
+        Position = UDim2.new(0, 2, 0, 22),
+        Size = UDim2.new(1, -4, 0, 26),
+        BackgroundTransparency = 1,
+        Text = "",
+        AutoButtonColor = false,
+        BorderSizePixel = 0,
+    }, row)
+    local track = mk("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 0, 0.5, 0),
+        Size = UDim2.new(1, 0, 0, 8),
+        BorderSizePixel = 0,
+    }, hitArea)
+    corner(track, 4)
     local trackStroke = stroke(track, 1)
     local fill = mk("Frame", {
         Size = UDim2.new(0, 0, 1, 0),
-        BackgroundColor3 = currentPal.accent,
         BorderSizePixel = 0,
     }, track)
-    corner(fill, 3)
+    corner(fill, 4)
+    local fillGrad = gradient(fill)
     local knob = mk("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0, 0, 0.5, 0),
-        Size = UDim2.fromOffset(14, 14),
-        BackgroundColor3 = currentPal.text,
+        Size = UDim2.fromOffset(16, 16),
         BorderSizePixel = 0,
         ZIndex = 2,
     }, track)
-    corner(knob, 7)
+    corner(knob, 8)
+    local knobStroke = stroke(knob, 2)
 
     local function apply(raw, fire)
         local steps = math.floor((raw - min) / step + 0.5)
@@ -560,14 +744,14 @@ local function makeSlider(parent, label, min, max, step, value, onChange, order)
         local rel = (x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1)
         apply(min + (max - min) * math.clamp(rel, 0, 1), true)
     end
-    track.InputBegan:Connect(function(io)
+    hitArea.InputBegan:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.MouseButton1
             or io.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             fromX(io.Position.X)
         end
     end)
-    track.InputEnded:Connect(function(io)
+    hitArea.InputEnded:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.MouseButton1
             or io.UserInputType == Enum.UserInputType.Touch then
             dragging = false
@@ -579,15 +763,25 @@ local function makeSlider(parent, label, min, max, step, value, onChange, order)
             fromX(io.Position.X)
         end
     end)
+    UserInputService.InputEnded:Connect(function(io)
+        if io.UserInputType == Enum.UserInputType.MouseButton1
+            or io.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
 
     bind(function(pal)
         nameLabel.TextColor3 = pal.subtext
+        valueChip.BackgroundColor3 = pal.card
         valueLabel.TextColor3 = pal.text
         track.BackgroundColor3 = pal.panel
         trackStroke.Color = pal.stroke
         trackStroke.Transparency = 0.5
-        fill.BackgroundColor3 = pal.accent
+        fillGrad.Color = ColorSequence.new(
+            ColorSequenceKeypoint.new(0, pal.accent),
+            ColorSequenceKeypoint.new(1, pal.accent2))
         knob.BackgroundColor3 = pal.text
+        knobStroke.Color = pal.accent
     end)
 
     apply(value, false)
@@ -595,9 +789,9 @@ end
 
 local function makeSegment(parent, options, current, onPick, order)
     local row = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 30),
+        Size = UDim2.new(1, 0, 0, 34),
         BackgroundTransparency = 1,
-        LayoutOrder = order or 0,
+        LayoutOrder = order or nextOrder(),
     }, parent)
     local selected = current
     local buttons = {}
@@ -607,12 +801,12 @@ local function makeSegment(parent, options, current, onPick, order)
             if btn then
                 if opt == selected then
                     btn.BackgroundColor3 = currentPal.accent
-                    btn.TextColor3 = currentPal.btnText
                     btn.BackgroundTransparency = 0
+                    btn.TextColor3 = currentPal.btnText
                 else
                     btn.BackgroundColor3 = currentPal.panel
+                    btn.BackgroundTransparency = 1
                     btn.TextColor3 = currentPal.subtext
-                    btn.BackgroundTransparency = 0.1
                 end
             end
         end
@@ -624,9 +818,10 @@ local function makeSegment(parent, options, current, onPick, order)
             Font = Enum.Font.GothamBold,
             TextSize = 11,
             AutoButtonColor = false,
+            BackgroundTransparency = 1,
             Text = opt,
         }, row)
-        corner(btn, 8)
+        corner(btn, 10)
         buttons[opt] = btn
         btn.MouseButton1Click:Connect(function()
             selected = opt
@@ -641,9 +836,9 @@ end
 
 local function makeInput(parent, label, placeholder, value, onChange, order)
     local wrap = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 52),
+        Size = UDim2.new(1, 0, 0, 58),
         BackgroundTransparency = 1,
-        LayoutOrder = order or 0,
+        LayoutOrder = order or nextOrder(),
     }, parent)
     local nameLabel = mk("TextLabel", {
         BackgroundTransparency = 1,
@@ -656,16 +851,15 @@ local function makeInput(parent, label, placeholder, value, onChange, order)
     }, wrap)
     local box = mk("Frame", {
         Position = UDim2.new(0, 2, 0, 20),
-        Size = UDim2.new(1, -4, 0, 28),
-        BackgroundColor3 = currentPal.panel,
+        Size = UDim2.new(1, -4, 0, 34),
         BorderSizePixel = 0,
     }, wrap)
-    corner(box, 8)
+    corner(box, 10)
     local boxStroke = stroke(box, 1)
     local tb = mk("TextBox", {
         BackgroundTransparency = 1,
-        Position = UDim2.new(0, 10, 0, 0),
-        Size = UDim2.new(1, -20, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(1, -24, 1, 0),
         Font = Enum.Font.Gotham,
         TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -682,14 +876,20 @@ local function makeInput(parent, label, placeholder, value, onChange, order)
         tb.TextColor3 = pal.text
         tb.PlaceholderColor3 = pal.subtext
     end)
+    tb.Focused:Connect(function()
+        boxStroke.Color = currentPal.accent
+        boxStroke.Transparency = 0
+    end)
     tb.FocusLost:Connect(function()
+        boxStroke.Color = currentPal.stroke
+        boxStroke.Transparency = 0.5
         onChange(tb.Text)
         saveAll()
     end)
     return wrap
 end
 
-local function makeHint(parent, text, order)
+local function makeHint(parent, text)
     local label = mk("TextLabel", {
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
@@ -701,8 +901,9 @@ local function makeHint(parent, text, order)
         TextYAlignment = Enum.TextYAlignment.Top,
         TextColor3 = currentPal.subtext,
         Text = text,
-        LayoutOrder = order or 0,
+        LayoutOrder = nextOrder(),
     }, parent)
+    bind(function(pal) label.TextColor3 = pal.subtext end)
     return label
 end
 
@@ -711,24 +912,35 @@ bind(function(pal)
     main.BackgroundTransparency = pal.glassT
     mainStroke.Color = pal.stroke
     mainStroke.Transparency = 0.45
+    iconGradient.Color = ColorSequence.new(
+        ColorSequenceKeypoint.new(0, pal.accent),
+        ColorSequenceKeypoint.new(1, pal.accent2))
     title.TextColor3 = pal.text
-    versionChip.BackgroundColor3 = pal.panel
-    versionChip.TextColor3 = pal.subtext
+    subtitle.TextColor3 = pal.subtext
     themeBtn.BackgroundColor3 = pal.panel
     themeBtn.TextColor3 = pal.text
+    themeBtn.Text = string.upper(themeMode)
     closeBtn.BackgroundColor3 = pal.panel
     closeBtn.TextColor3 = pal.text
+    gradLine.BackgroundColor3 = pal.accent
+    tabBar.BackgroundColor3 = pal.panel
+    tabBar.BackgroundTransparency = 0.3
     statusLabel.TextColor3 = pal.subtext
+    versionLabel.TextColor3 = pal.subtext
 end)
 
--- repaint подсказок
-local hintPainters = {}
-local function bindHint(label)
-    table.insert(hintPainters, label)
-end
-table.insert(repainters, function(pal)
-    for _, label in ipairs(hintPainters) do
-        label.TextColor3 = pal.subtext
+-- попытка подгрузить png-иконку в шапку
+task.spawn(function()
+    local assetId = loadIconAsset()
+    if assetId and iconLabel.Parent then
+        iconLabel.Text = ""
+        mk("ImageLabel", {
+            BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(1, -8, 1, -8),
+            Image = assetId,
+        }, iconBox)
     end
 end)
 
@@ -741,7 +953,6 @@ local toastFrame = mk("Frame", {
     Position = UDim2.new(0.5, 0, 1, -24),
     Size = UDim2.new(0, 0, 0, 34),
     AutomaticSize = Enum.AutomaticSize.X,
-    BackgroundColor3 = currentPal.panel,
     BorderSizePixel = 0,
     Visible = false,
     ZIndex = 50,
@@ -795,7 +1006,7 @@ local function updateStatus()
             math.floor(dummy.humanoid.MaxHealth + 0.5),
             settings.motion, settings.rig)
     else
-        statusLabel.Text = "манекена нет — кнопка SPAWN во вкладке SPAWN"
+        statusLabel.Text = "манекена нет — SPAWN во вкладке SPAWN"
     end
 end
 
@@ -921,7 +1132,7 @@ end
 
 -- R15: клон моего персонажа
 local function buildR15Clone()
-    local char = LocalPlayer.Character
+    local char = myChar()
     local charHrp = char and char:FindFirstChild("HumanoidRootPart")
     if not charHrp then return nil, nil, "нет персонажа" end
     local rig
@@ -961,12 +1172,6 @@ local function fetchAccessory(id)
         local acc = obj:FindFirstChildWhichIsA("Accessory", true)
         if acc then return acc end
     end
-    return nil
-end
-
-local function myChar()
-    local c = LocalPlayer.Character
-    if c and c.Parent then return c end
     return nil
 end
 
@@ -1101,14 +1306,14 @@ local function removeHealthBar()
     end
 end
 
-local function floatDamage(amount)
+local function floatDamage(amount, headshot)
     local head = dummy.head
     local model = dummy.model
     if not (head and model) then return end
     local bb = Instance.new("BillboardGui")
     bb.Name = "WC_FloatDmg"
     bb.Adornee = head
-    bb.Size = UDim2.fromOffset(150, 42)
+    bb.Size = UDim2.fromOffset(170, 46)
     bb.StudsOffsetWorldSpace = Vector3.new(
         (math.random() - 0.5) * 2.2,
         2.7 + math.random() * 0.7,
@@ -1119,10 +1324,10 @@ local function floatDamage(amount)
     tl.BackgroundTransparency = 1
     tl.Size = UDim2.new(1, 0, 1, 0)
     tl.Font = Enum.Font.GothamBlack
-    tl.TextSize = 18
-    tl.Text = "-" .. string.format("%.1f", amount)
-    tl.TextColor3 = currentPal.danger
-    tl.TextStrokeTransparency = 0.4
+    tl.TextSize = headshot and 20 or 18
+    tl.Text = "-" .. string.format("%.0f", amount) .. (headshot and "  HS" or "")
+    tl.TextColor3 = headshot and currentPal.accent2 or currentPal.danger
+    tl.TextStrokeTransparency = 0.35
     tl.Parent = bb
     bb.Parent = model
     local ti = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -1170,19 +1375,40 @@ local function updateStats()
     end
 end
 
+-- цвет строки лога по содержимому
+local function logColorFor(text)
+    local head = string.sub(text, 1, 1)
+    if head == "-" then return "danger" end
+    if string.find(text, "spawn") or string.find(text, "healed") then return "success" end
+    if string.find(text, "down") then return "danger" end
+    return "subtext"
+end
+
+local function paintLogEntry(entry)
+    local kind = entry:GetAttribute("wcColor") or "subtext"
+    if kind == "danger" then
+        entry.TextColor3 = currentPal.danger
+    elseif kind == "success" then
+        entry.TextColor3 = currentPal.success
+    else
+        entry.TextColor3 = currentPal.subtext
+    end
+end
+
 local function logLine(text)
     if not logHolder then return end
     logCounter = logCounter + 1
     local entry = mk("TextLabel", {
         Size = UDim2.new(1, 0, 0, 16),
         BackgroundTransparency = 1,
-        Font = Enum.Font.Gotham,
+        Font = Enum.Font.Code,
         TextSize = 11,
         TextXAlignment = Enum.TextXAlignment.Left,
-        TextColor3 = currentPal.subtext,
         Text = text,
         LayoutOrder = -logCounter,
     }, logHolder)
+    entry:SetAttribute("wcColor", logColorFor(text))
+    paintLogEntry(entry)
     table.insert(logEntries, entry)
     if #logEntries > 80 then
         local oldest = table.remove(logEntries, 1)
@@ -1202,9 +1428,43 @@ local function resetStats()
 end
 
 ---------------------------------------------------------------------
--- DAMAGE WIRING + RESPAWN
+-- DAMAGE CORE (пассивный канал + hit-детектор)
 ---------------------------------------------------------------------
 
+local lastLocalApply = 0      -- урон применили мы сами (applyHit)
+local lastExternalDamage = 0  -- урон нанесло чужое оружие (пассивный)
+
+local function registerHit(amount, meta)
+    dummy.hitCount = dummy.hitCount + 1
+    dummy.totalDamage = dummy.totalDamage + amount
+    table.insert(dummy.window, { t = os.clock(), d = amount })
+    updateStats()
+    updateHpBar()
+    if settings.floatDamage then
+        floatDamage(amount, meta.headshot == true)
+    end
+    local tag = ""
+    if meta.headshot then tag = tag .. "  HS" end
+    if meta.emulated then tag = tag .. "  est" end
+    logLine(string.format("-%.1f  %s  %.1fm%s  %s",
+        amount,
+        meta.part or "?",
+        meta.distance or 0,
+        tag,
+        os.date("%H:%M:%S")))
+end
+
+-- применяем урон сами (hit-детектор / TEST HIT)
+local function applyHit(amount, meta)
+    local h = dummy.humanoid
+    if not h or h.Health <= 0 then return end
+    lastLocalApply = os.clock()
+    dummy.lastHealth = math.max(0, h.Health - amount)
+    h.Health = dummy.lastHealth
+    registerHit(amount, meta)
+end
+
+-- пассивный канал: игра сама уронила манекен (клиентский damage)
 local function wireDamage(humanoid)
     table.insert(dummy.conns, humanoid.HealthChanged:Connect(function(h)
         if dummy.humanoid ~= humanoid then return end
@@ -1216,17 +1476,18 @@ local function wireDamage(humanoid)
             updateHpBar()
             return
         end
+        -- наш собственный applyHit уже залогирован активным каналом
+        if os.clock() - lastLocalApply < 0.2 then
+            dummy.lastHealth = h
+            updateHpBar()
+            return
+        end
         local prev = dummy.lastHealth
         dummy.lastHealth = h
         local delta = prev - h
         if delta > 0.05 then
-            dummy.hitCount = dummy.hitCount + 1
-            dummy.totalDamage = dummy.totalDamage + delta
-            table.insert(dummy.window, { t = os.clock(), d = delta })
-            updateStats()
-            updateHpBar()
-            if settings.floatDamage then floatDamage(delta) end
-            logLine(string.format("-%.1f  %s", delta, os.date("%H:%M:%S")))
+            lastExternalDamage = os.clock()
+            registerHit(delta, { part = "external" })
         end
     end))
     table.insert(dummy.conns, humanoid.Died:Connect(function()
@@ -1240,6 +1501,87 @@ local function wireDamage(humanoid)
         end
     end))
 end
+
+-- урон твоего оружия: атрибут / Value с именем Damage или DMG
+local function weaponDamage()
+    local c = myChar()
+    local tool = c and c:FindFirstChildOfClass("Tool")
+    if not tool then return nil end
+    for _, key in ipairs({ "Damage", "DMG", "damage", "dmg" }) do
+        local v = tool:GetAttribute(key)
+        if type(v) == "number" and v > 0 then return v end
+    end
+    for _, d in ipairs(tool:GetDescendants()) do
+        if d:IsA("NumberValue") or d:IsA("IntValue") then
+            local n = string.lower(d.Name)
+            if string.find(n, "damage") or string.find(n, "dmg") then
+                local v = tonumber(d.Value)
+                if v and v > 0 then return v end
+            end
+        end
+    end
+    return nil
+end
+
+-- hit-детектор: клик -> raycast от камеры -> попадание в манекен
+local function doHitRay()
+    if not (dummy.model and dummy.humanoid and dummy.humanoid.Health > 0) then return end
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+    local mLoc = UserInputService:GetMouseLocation()
+    if not mLoc then return end
+    local okRay, res = pcall(function()
+        local ray = camera:ViewportPointToRay(mLoc.X, mLoc.Y)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local exclude = {}
+        local c = myChar()
+        if c then table.insert(exclude, c) end
+        params.FilterDescendantsInstances = exclude
+        return workspace:Raycast(ray.Origin, ray.Direction * 600, params)
+    end)
+    if not okRay or not res then return end
+    local inst = res.Instance
+    if not inst then return end
+    local okIs, isDummy = pcall(function() return inst:IsDescendantOf(dummy.model) end)
+    if not (okIs and isDummy) then return end
+
+    -- оружие только что само засчитало урон? не дублируем
+    if os.clock() - lastExternalDamage < 0.3 then return end
+
+    local isHead = string.find(string.lower(inst.Name), "head") ~= nil
+    local dmg = weaponDamage()
+    local emulated = false
+    if not dmg then
+        dmg = settings.testDamage
+        emulated = true
+    end
+    local headshot = false
+    if isHead and settings.headshotMult then
+        dmg = dmg * 2
+        headshot = true
+    end
+    applyHit(dmg, {
+        part = inst.Name,
+        distance = res.Distance,
+        headshot = headshot,
+        emulated = emulated,
+    })
+end
+
+-- клики мыши и тач (кроме нажатий по UI)
+UserInputService.InputBegan:Connect(function(io, gameProcessed)
+    if gameProcessed then return end
+    if io.UserInputType == Enum.UserInputType.MouseButton1
+        or io.UserInputType == Enum.UserInputType.Touch then
+        if not settings.hitDetector then return end
+        task.defer(doHitRay)
+    end
+end)
+
+---------------------------------------------------------------------
+-- SPAWN
+---------------------------------------------------------------------
 
 function spawnDummy(cf)
     clearDummy()
@@ -1324,11 +1666,11 @@ local function charCFrame()
     return nil
 end
 
-local function raycastParams()
+local function raycastParams(excludeDummy)
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     local exclude = {}
-    if dummy.model then table.insert(exclude, dummy.model) end
+    if excludeDummy and dummy.model then table.insert(exclude, dummy.model) end
     local c = myChar()
     if c then table.insert(exclude, c) end
     params.FilterDescendantsInstances = exclude
@@ -1340,7 +1682,7 @@ local function groundPos(pos)
         return workspace:Raycast(
             pos + Vector3.new(0, 40, 0),
             Vector3.new(0, -160, 0),
-            raycastParams())
+            raycastParams(true))
     end)
     if ok and res then return res.Position end
     return pos
@@ -1407,7 +1749,16 @@ local function healDummy()
         dummy.humanoid.Health = dummy.humanoid.MaxHealth
         dummy.lastHealth = dummy.humanoid.MaxHealth
         updateHpBar()
+        logLine("healed  " .. os.date("%H:%M:%S"))
         notify("манекен вылечен")
+    else
+        notify("манекена нет")
+    end
+end
+
+local function testHit()
+    if dummy.humanoid then
+        applyHit(settings.testDamage, { part = "manual", distance = 0, emulated = true })
     else
         notify("манекена нет")
     end
@@ -1504,7 +1855,7 @@ RunService.Heartbeat:Connect(function(dt)
         end
     end
 
-    -- процедурная анимация: ходьба на месте / лёгкий idle
+    -- процедурная анимация: ходьба / лёгкий idle
     local vel = hrp.AssemblyLinearVelocity
     local speed = Vector3.new(vel.X, 0, vel.Z).Magnitude
     local joints = dummy.joints
@@ -1549,64 +1900,68 @@ end)
 -- SPAWN
 do
     local sf = tabFrames.SPAWN
-    local row1, add1 = makeRow(sf, 2, 1)
+    sectionLabel(sf, "появление")
+    local row1, add1 = makeRow(sf, 2)
     add1("SPAWN", "accent", spawnInFront)
     add1("AT AIM", "plain", spawnAtAim)
-    local row2, add2 = makeRow(sf, 2, 2)
+    local row2, add2 = makeRow(sf, 2)
     add2("TO ME", "plain", teleportToMe)
     add2("DELETE", "danger", deleteDummy)
-    makeToggle(sf, "авто-респаун", settings.respawn, function(v) settings.respawn = v end, 3)
+    sectionLabel(sf, "поведение")
+    makeSwitch(sf, "авто-респаун", settings.respawn, function(v) settings.respawn = v end)
     makeSlider(sf, "респаун, сек", 1, 10, 0.5, settings.respawnDelay,
-        function(v) settings.respawnDelay = v end, 4)
+        function(v) settings.respawnDelay = v end)
     makeSlider(sf, "радиус брожения", 5, 60, 1, settings.wanderRadius,
-        function(v) settings.wanderRadius = v end, 5)
-    local hint = makeHint(sf, "SPAWN — манекен появляется перед тобой, AT AIM — в точку прицела. Манекен виден только на твоём клиенте.", 6)
-    bindHint(hint)
+        function(v) settings.wanderRadius = v end)
+    makeHint(sf, "SPAWN — манекен появляется перед тобой, AT AIM — в точку прицела. Манекен виден только на твоём клиенте.")
 end
 
 -- LOOK
 do
     local sf = tabFrames.LOOK
+    sectionLabel(sf, "тело")
     makeSegment(sf, { "R6", "R15" }, settings.rig,
-        function(v) settings.rig = v end, 1)
+        function(v) settings.rig = v end)
     makeInput(sf, "имя", "Dummy", settings.name,
-        function(v) settings.name = v end, 2)
-    makeInput(sf, "футболка — id (пусто = твоя, 0 = снять)", "1839374", settings.shirt,
-        function(v) settings.shirt = v end, 3)
-    makeInput(sf, "штаны — id (пусто = твои, 0 = снять)", "1148986", settings.pants,
-        function(v) settings.pants = v end, 4)
-    makeInput(sf, "волосы / аксессуары — id через запятую", "13781923, 927184302", settings.accessories,
-        function(v) settings.accessories = v end, 5)
+        function(v) settings.name = v end)
     makeInput(sf, "цвет кожи — hex (например d9a066)", "d9a066", settings.skin,
-        function(v) settings.skin = v end, 6)
-    makeToggle(sf, "подсветка манекена", settings.highlight,
-        function(v) setHighlight(v) end, 7)
-    local row, add = makeRow(sf, 1, 8)
+        function(v) settings.skin = v end)
+    sectionLabel(sf, "одежда и аксессуары")
+    makeInput(sf, "футболка — id (пусто = твоя, 0 = снять)", "1839374", settings.shirt,
+        function(v) settings.shirt = v end)
+    makeInput(sf, "штаны — id (пусто = твои, 0 = снять)", "1148986", settings.pants,
+        function(v) settings.pants = v end)
+    makeInput(sf, "волосы / аксессуары — id через запятую", "13781923, 927184302", settings.accessories,
+        function(v) settings.accessories = v end)
+    makeSwitch(sf, "подсветка манекена", settings.highlight,
+        function(v) setHighlight(v) end)
+    local row, add = makeRow(sf, 1)
     add("APPLY LOOK", "accent", applyLookNow)
-    local hint = makeHint(sf, "APPLY LOOK пересоздаёт манекен на его текущем месте с новыми настройками внешности. R15 — точная копия твоего персонажа.", 9)
-    bindHint(hint)
+    makeHint(sf, "APPLY LOOK пересоздаёт манекен на его текущем месте с новыми настройками внешности. R15 — точная копия твоего персонажа.")
 end
 
 -- MOVE
 do
     local sf = tabFrames.MOVE
+    sectionLabel(sf, "режим движения")
     makeSegment(sf, { "stand", "wander", "follow" }, settings.motion,
-        function(v) settings.motion = v end, 1)
+        function(v) settings.motion = v end)
+    sectionLabel(sf, "скорость")
     makeSlider(sf, "walkspeed", 0, 100, 1, settings.walkspeed,
-        function(v) settings.walkspeed = v end, 2)
+        function(v) settings.walkspeed = v end)
     makeSlider(sf, "jumppower", 0, 200, 5, settings.jumppower,
-        function(v) settings.jumppower = v end, 3)
-    local hint = makeHint(sf, "stand — стоит на месте; wander — бродит вокруг точки спавна; follow — ходит за тобой.", 4)
-    bindHint(hint)
+        function(v) settings.jumppower = v end)
+    makeHint(sf, "stand — стоит на месте; wander — бродит вокруг точки спавна; follow — ходит за тобой.")
 end
 
 -- TEST
 do
     local sf = tabFrames.TEST
+    sectionLabel(sf, "статистика")
     local statsRow = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 40),
+        Size = UDim2.new(1, 0, 0, 52),
         BackgroundTransparency = 1,
-        LayoutOrder = 1,
+        LayoutOrder = nextOrder(),
     }, sf)
     mk("UIListLayout", {
         FillDirection = Enum.FillDirection.Horizontal,
@@ -1623,24 +1978,24 @@ do
             Size = UDim2.new(1 / 3, -(16 / 3), 1, 0),
             LayoutOrder = i,
         }, statsRow)
-        corner(chip, 8)
+        corner(chip, 10)
         local chipStroke = stroke(chip, 1)
         local caption = mk("TextLabel", {
             BackgroundTransparency = 1,
-            Position = UDim2.new(0, 0, 0, 4),
+            Position = UDim2.new(0, 0, 0, 6),
             Size = UDim2.new(1, 0, 0, 12),
-            Font = Enum.Font.Gotham,
+            Font = Enum.Font.GothamBold,
             TextSize = 9,
             TextColor3 = currentPal.subtext,
             Text = cap.text,
         }, chip)
         local value = mk("TextLabel", {
             BackgroundTransparency = 1,
-            Position = UDim2.new(0, 0, 0, 16),
-            Size = UDim2.new(1, 0, 0, 20),
+            Position = UDim2.new(0, 0, 0, 19),
+            Size = UDim2.new(1, 0, 0, 26),
             Font = Enum.Font.GothamBold,
-            TextSize = 15,
-            TextColor3 = currentPal.text,
+            TextSize = 20,
+            TextColor3 = currentPal.accent,
             Text = "0",
         }, chip)
         statLabels[cap.key] = value
@@ -1650,38 +2005,30 @@ do
             chipStroke.Color = pal.stroke
             chipStroke.Transparency = 0.55
             caption.TextColor3 = pal.subtext
-            value.TextColor3 = pal.text
+            value.TextColor3 = pal.accent
         end)
     end
 
-    makeSlider(sf, "max health", 10, 5000, 10, settings.maxHealth,
-        function(v) setMaxHealth(v) end, 2)
-    makeToggle(sf, "god mode — урон игнорируется", settings.godMode,
-        function(v) setGodMode(v) end, 3)
-    makeToggle(sf, "всплывающие числа урона", settings.floatDamage,
-        function(v) settings.floatDamage = v end, 4)
-    makeToggle(sf, "полоска HP над головой", settings.healthBar,
-        function(v) setHealthBar(v) end, 5)
-
-    local row, add = makeRow(sf, 2, 6)
+    sectionLabel(sf, "урон")
+    makeSwitch(sf, "hit-детектор (клик -> raycast -> урон)", settings.hitDetector,
+        function(v) settings.hitDetector = v end)
+    makeSwitch(sf, "headshot x2 (эмуляция)", settings.headshotMult,
+        function(v) settings.headshotMult = v end)
+    makeSwitch(sf, "всплывающие числа урона", settings.floatDamage,
+        function(v) settings.floatDamage = v end)
+    makeSwitch(sf, "полоска HP над головой", settings.healthBar,
+        function(v) setHealthBar(v) end)
+    makeSlider(sf, "TEST DAMAGE (если оружие не сообщает)", 1, 200, 1, settings.testDamage,
+        function(v) settings.testDamage = v end)
+    local row, add = makeRow(sf, 3)
+    add("TEST HIT", "accent", testHit)
     add("HEAL", "plain", healDummy)
-    add("RESET STATS", "plain", resetStats)
+    add("RESET", "danger", resetStats)
+    makeHint(sf, "Урон берётся из твоего Tool (атрибут или Value Damage/DMG). Если игра его не сообщает — применяется TEST DAMAGE, попадания помечаются est. god mode игнорирует весь урон.")
 
-    local hint = makeHint(sf, "Стреляй или бей манекен — урон считается локально: лог, TOTAL, DPS за последние 5 секунд.", 7)
-    bindHint(hint)
-
-    mk("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 14),
-        BackgroundTransparency = 1,
-        Font = Enum.Font.GothamBold,
-        TextSize = 10,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = "LOG",
-        LayoutOrder = 8,
-    }, sf)
-
+    sectionLabel(sf, "log")
     logHolder = mk("ScrollingFrame", {
-        Size = UDim2.new(1, 0, 0, 150),
+        Size = UDim2.new(1, 0, 0, 168),
         BackgroundColor3 = currentPal.card,
         BackgroundTransparency = 0.05,
         BorderSizePixel = 0,
@@ -1689,17 +2036,17 @@ do
         ScrollBarImageTransparency = 0.35,
         CanvasSize = UDim2.new(0, 0, 0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        LayoutOrder = 9,
+        LayoutOrder = nextOrder(),
     }, sf)
-    corner(logHolder, 8)
+    corner(logHolder, 10)
     local logStroke = stroke(logHolder, 1)
     mk("UIListLayout", {
         Padding = UDim.new(0, 2),
         SortOrder = Enum.SortOrder.LayoutOrder,
     }, logHolder)
     mk("UIPadding", {
-        PaddingLeft = UDim.new(0, 8),
-        PaddingRight = UDim.new(0, 8),
+        PaddingLeft = UDim.new(0, 10),
+        PaddingRight = UDim.new(0, 10),
         PaddingTop = UDim.new(0, 6),
         PaddingBottom = UDim.new(0, 6),
     }, logHolder)
@@ -1708,10 +2055,8 @@ do
         logHolder.BackgroundTransparency = 0.05
         logStroke.Color = pal.stroke
         logStroke.Transparency = 0.55
-    end)
-    bind(function(pal)
         for _, entry in ipairs(logEntries) do
-            entry.TextColor3 = pal.subtext
+            paintLogEntry(entry)
         end
     end)
 end
@@ -1756,6 +2101,7 @@ themeBtn.MouseButton1Click:Connect(function()
     themeMode = (themeMode == "dark") and "white" or "dark"
     currentPal = THEMES[themeMode]
     repaint()
+    paintTabBar()
     saveAll()
     notify("тема: " .. themeMode)
 end)
@@ -1774,7 +2120,7 @@ if UserInputService.TouchEnabled then
         Size = UDim2.fromOffset(44, 44),
         Font = Enum.Font.GothamBlack,
         TextSize = 18,
-        AutoButtonColor = false,
+        AutoButtonColor = true,
         Text = "D",
         ZIndex = 60,
     }, gui)
@@ -1818,4 +2164,4 @@ repaint()
 paintTabBar()
 updateStats()
 updateStatus()
-notify("Damage Dummy " .. CONFIG.VERSION .. " готов — RightShift скрывает панель")
+notify("Damage Dummy " .. CONFIG.VERSION .. " — RightShift скрывает панель")
