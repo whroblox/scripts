@@ -1,0 +1,11 @@
+{
+  "id": "template",
+  "name": "Script Template",
+  "version": "0.0.1",
+  "author": "WhiteCheats",
+  "description": "Шаблон карточки скрипта: скопируй папку, замени manifest и main.lua",
+  "entry": "main.lua",
+  "icon": "icon.svg",
+  "tags": ["template"],
+  "hidden": true
+}
